@@ -6,12 +6,8 @@
 #include <utility>
 
 //TODO
-//add getters to priority, state, id
-//modify state in process
-//add try/catch on process/get result/destructor
 //split to files
 //unit tests
-
 
 enum TaskPriority {
 	HIGH,
@@ -38,32 +34,31 @@ public:
 	Task(Func funPtr)
 		:funPtr_(funPtr, NORMAL) {}
 
-	template <typename T = Arg>
-	std::enable_if_t<!std::is_same_v<T, void>, void>
-		Process() {
-		asyncFutureResult_ = std::async(std::launch::async, funPtr_, std::ref(*data_));
-	}
-
-	template <typename T = Arg>
-	std::enable_if_t<std::is_same_v<T, void>, void>
-		Process() {
-		asyncFutureResult_ = std::async(std::launch::async, funPtr_);
+	void Process() {
+		try {
+			task_state_ = IN_PROGRESS;
+			ProcessAsyncFuture();
+			task_state_ = COMPLETED;
+		}
+		catch (const std::exception& e) {
+			task_state_ = ERROR;
+			std::cerr << "Exception in Procces: " << e.what() << '\n';
+		}
 	}
 
 	ReturnType GetResult() {
+		ReturnType result;
 		if (asyncFutureResult_.valid()) {
-			return asyncFutureResult_.get();
-		}else {
-			return ReturnType{};
+			try {
+				result = asyncFutureResult_.get();
+			}
+			catch (const std::exception& e) {
+				task_state_ = ERROR;
+				std::cerr << "Exception in getting result: " << e.what() << '\n';
+				result = ReturnType{}; 
+			}
 		}
-	}
-	//get/set on private fields (parameters): id, state, status (read only)
-
-	~Task()
-	{
-		if (asyncFutureResult_.valid()) {
-			asyncFutureResult_.get();
-		} 
+		return result;
 	}
 
 	enum TaskState {
@@ -72,6 +67,24 @@ public:
 		COMPLETED,
 		ERROR
 	};
+
+	TaskPriority GetTaskPriority() const {
+		return task_priority_;
+	}
+
+	unsigned GetTaskId() const {
+		return task_id_;
+	}
+
+	TaskState GetTaskState() const {
+		return task_state_;
+	}
+	~Task()
+	{
+		if (asyncFutureResult_.valid()) {
+			asyncFutureResult_.wait();
+		} 
+	}
 
 private:
 	std::optional<std::decay_t<Arg>> data_;
@@ -83,6 +96,18 @@ private:
 	TaskState task_state_;
 
 	static inline unsigned current_tasks_count = 0;
+
+	template <typename T = Arg>
+	std::enable_if_t<std::is_same_v<T, void>, void>
+		ProcessAsyncFuture() {
+		asyncFutureResult_ = std::async(std::launch::async, funPtr_);
+	}
+
+	template <typename T = Arg>
+	std::enable_if_t<!std::is_same_v<T, void>, void>
+		ProcessAsyncFuture() {
+		asyncFutureResult_ = std::async(std::launch::async, funPtr_, std::ref(*data_));
+	}
 };
 
 template <typename Func, typename Arg>
