@@ -1,9 +1,22 @@
 ﻿#pragma once
 #include <future>
+#include <functional>
 #include <optional>
 #include <thread>
 #include <type_traits>
 #include <utility>
+
+// generic template with arguments
+template<typename Func, typename Arg>
+struct ReturnTypeDeterminer {
+	using type = std::invoke_result_t<Func, std::decay_t<Arg>>;
+};
+
+// template specialization without arguments
+template<typename Func>
+struct ReturnTypeDeterminer<Func, void> {
+	using type = std::invoke_result_t<Func>;
+};
 
 enum TaskPriority {
 	HIGH,
@@ -11,18 +24,23 @@ enum TaskPriority {
 	LOW
 };
 
-template <typename Func, typename Arg>
+template <typename Func, typename Arg=void>
 class Task {
 public:
-	using ReturnType = std::invoke_result_t<Func, std::decay_t<Arg>>;
+	// even with use conditional_t a specialization error occurs
+	using ReturnType = typename ReturnTypeDeterminer<Func, Arg>::type;
 
-	Task(Func funPtr, Arg&& data, TaskPriority task_priority=NORMAL)
-		:funPtr_(funPtr), data_(std::forward<Arg>(data)), task_priority_(task_priority),
+	// constructor for func with arguments
+	template<typename T = Arg, typename = std::enable_if_t<!std::is_same<T, void>::value>>
+	Task(Func funPtr, T&& data, TaskPriority task_priority = NORMAL)
+		: fun_ptr_(std::move(funPtr)),	data_(std::forward<T>(data)), task_priority_(task_priority),
 		task_id_(++current_tasks_count), task_state_(UNSTARTED) {}
-	
-	Task(Func funPtr, TaskPriority task_priority=NORMAL)
-		:funPtr_(funPtr), data_(std::nullopt), task_priority_(task_priority),
-			task_id_(++current_tasks_count), task_state_(UNSTARTED) {}
+
+	// constructor for void arguments
+	template<typename T = Arg, typename = std::enable_if_t<std::is_same<T, void>::value>>
+	Task(Func funPtr, TaskPriority task_priority = NORMAL)
+		: fun_ptr_(std::move(funPtr)),	data_(std::monostate{}), task_priority_(task_priority),
+		task_id_(++current_tasks_count), task_state_(UNSTARTED) {}
 
 	void Process() {
 		try {
@@ -38,14 +56,14 @@ public:
 
 	ReturnType GetResult() {
 		ReturnType result;
-		if (asyncFutureResult_.valid()) {
+		if (async_future_result_.valid()) {
 			try {
-				result = asyncFutureResult_.get();
+				result = async_future_result_.get();
 			}
 			catch (const std::exception& e) {
 				task_state_ = ERROR;
 				std::cerr << "Exception in getting result: " << e.what() << '\n';
-				result = ReturnType{}; 
+				result = ReturnType{};
 			}
 		}
 		return result;
@@ -69,40 +87,47 @@ public:
 	TaskState GetTaskState() const {
 		return task_state_;
 	}
+
 	~Task()
 	{
-		if (asyncFutureResult_.valid()) {
-			asyncFutureResult_.wait();
+		if (async_future_result_.valid()) {
+			async_future_result_.wait();
 		} 
 	}
 
 private:
-	std::optional<std::decay_t<Arg>> data_;
-	Func funPtr_;
-	std::future<ReturnType> asyncFutureResult_;
+	// if don't use this construct, the code will not compile because of the possibility of std::decay_t<void>
+	using ArgType = std::conditional_t<std::is_same_v<Arg, void>,	// condition
+		std::monostate, std::decay_t<Arg>>;						   // if  else
+
+	ArgType data_; // instead of std::optional<std::decay_t<Arg>> data_
+	Func fun_ptr_;
+	std::future<ReturnType> async_future_result_;
 
 	TaskPriority task_priority_;
 	unsigned task_id_;
 	TaskState task_state_;
 
+	// inline includes a field from all files only once
 	static inline unsigned current_tasks_count = 0;
 
 	void ProcessAsyncFuture() {
+		// constexpr compiles only the part of the branching that is true
 		if constexpr (std::is_same_v<Arg, void>) {
-			asyncFutureResult_ = std::async(std::launch::async, funPtr_);
+			async_future_result_ = std::async(std::launch::async, fun_ptr_);
 		}
 		else {
-			asyncFutureResult_ = std::async(std::launch::async, funPtr_, std::ref(*data_));
+			async_future_result_ = std::async(std::launch::async, fun_ptr_, data_);
 		}
 	}
 };
 
 template <typename Func, typename Arg>
 auto MakeTask(Func funcPtr, Arg&& data, TaskPriority task_priority=TaskPriority::NORMAL) {
-	return Task<Func, std::decay_t<Arg>>(funcPtr, std::forward<Arg>(data), task_priority);
+	return Task<Func, std::decay_t<Arg>>(std::move(funcPtr), std::forward<Arg>(data), task_priority);
 }
 
 template <typename Func>
 auto MakeTask(Func funcPtr, TaskPriority task_priority = TaskPriority::NORMAL) {
-	return Task<Func, void>(funcPtr, task_priority);
+	return Task<Func>(std::move(funcPtr), task_priority);
 }
