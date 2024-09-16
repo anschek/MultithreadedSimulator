@@ -5,6 +5,7 @@
 #include <thread>
 #include <type_traits>
 #include <utility>
+#include <shared_mutex>
 
 // generic template with arguments
 template<typename Func, typename Arg>
@@ -32,15 +33,15 @@ public:
 
 	// constructor for func with arguments
 	template<typename T = Arg, typename = std::enable_if_t<!std::is_same<T, void>::value>>
-	Task(Func funPtr, T&& data, TaskPriority task_priority = NORMAL)
+	Task(Func funPtr, T&& data, std::shared_mutex& mutex, std::condition_variable& cv, TaskPriority task_priority = NORMAL)
 		: fun_ptr_(std::move(funPtr)),	data_(std::forward<T>(data)), task_priority_(task_priority),
-		task_id_(++current_tasks_count), task_state_(UNSTARTED) {}
+		task_id_(++current_tasks_count), task_state_(UNSTARTED), mutex_(mutex), cond_var_(cv) {}
 
 	// constructor for void arguments
 	template<typename T = Arg, typename = std::enable_if_t<std::is_same<T, void>::value>>
-	Task(Func funPtr, TaskPriority task_priority = NORMAL)
+	Task(Func funPtr, std::shared_mutex& mutex, std::condition_variable& cv, TaskPriority task_priority = NORMAL)
 		: fun_ptr_(std::move(funPtr)),	data_(std::monostate{}), task_priority_(task_priority),
-		task_id_(++current_tasks_count), task_state_(UNSTARTED) {}
+		task_id_(++current_tasks_count), task_state_(UNSTARTED), mutex_(mutex), cond_var_(cv) {}
 
 	void Process() {
 		try {
@@ -52,6 +53,8 @@ public:
 			task_state_ = ERROR;
 			std::cerr << "Exception in Procces: " << e.what() << '\n';
 		}
+		cond_var_.notify_all();
+		
 	}
 
 	ReturnType GetResult() {
@@ -113,21 +116,35 @@ private:
 
 	void ProcessAsyncFuture() {
 		// constexpr compiles only the part of the branching that is true
-		if constexpr (std::is_same_v<Arg, void>) {
+		if constexpr (!std::is_same_v<Arg, void>) {
+			//Arg (lvalue): without mutex
+			if (!std::is_reference_v<Arg>) {
+				async_future_result_ = std::async(std::launch::async, fun_ptr_, data_);
+			}//Arg&: write mutex			
+			else if (!std::is_const_v<std::remove_reference_t<Arg>>) {
+				std::unique_lock lock(mutex_);
+				async_future_result_ = std::async(std::launch::async, fun_ptr_, data_);
+			}//const Arg&: read mutex
+			else {
+				std::shared_lock lock(mutex_);
+				async_future_result_ = std::async(std::launch::async, fun_ptr_, data_);
+			}
+		}//void: without mutex
+		else {
 			async_future_result_ = std::async(std::launch::async, fun_ptr_);
 		}
-		else {
-			async_future_result_ = std::async(std::launch::async, fun_ptr_, data_);
-		}
 	}
+
+	std::shared_mutex& mutex_;
+	std::condition_variable& cond_var_;
 };
 
 template <typename Func, typename Arg>
-auto MakeTask(Func funcPtr, Arg&& data, TaskPriority task_priority=TaskPriority::NORMAL) {
-	return Task<Func, std::decay_t<Arg>>(std::move(funcPtr), std::forward<Arg>(data), task_priority);
+auto MakeTask(Func funcPtr, Arg&& data, std::shared_mutex& mutex, std::condition_variable& cv, TaskPriority task_priority = TaskPriority::NORMAL) {
+	return Task<Func, std::decay_t<Arg>>(std::move(funcPtr), std::forward<Arg>(data), mutex, cv, task_priority);
 }
 
 template <typename Func>
-auto MakeTask(Func funcPtr, TaskPriority task_priority = TaskPriority::NORMAL) {
-	return Task<Func>(std::move(funcPtr), task_priority);
+auto MakeTask(Func funcPtr, std::shared_mutex& mutex, std::condition_variable& cv, TaskPriority task_priority = TaskPriority::NORMAL) {
+	return Task<Func>(std::move(funcPtr), mutex, cv, task_priority);
 }
