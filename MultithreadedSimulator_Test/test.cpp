@@ -14,10 +14,9 @@ namespace TaskTest {
 
     class TaskFixture : public Test {
     protected:
-        TaskFixture() : mutex_(), cv_() {}
+        TaskFixture() : mutex_() {}
 
         std::shared_mutex mutex_;
-        std::condition_variable_any cv_;
     };
 
     int TaskFuncWithArg(int data) {
@@ -45,13 +44,13 @@ namespace TaskTest {
 
     TEST_F(TaskFixture, GetResult_GivenArg_ReturnsExpectedResult) {
         int data = 5;
-        auto task = MakeTask(TaskFuncWithArg, data, mutex_, cv_);
+        auto task = MakeTask(TaskFuncWithArg, data);
         task.Process();
         EXPECT_EQ(task.GetResult(), 15);
     }
     TEST_F(TaskFixture, GetResult_GivenRefArg_ReturnsExpectedResult) {
         int data = 5;
-        auto task = MakeTask(TaskFuncWithRefArg, std::ref(data), mutex_, cv_);
+        auto task = MakeTask(TaskFuncWithRefArg, std::ref(data), &mutex_);
         task.Process();
         task.GetResult();
         EXPECT_EQ(data, 15);
@@ -59,23 +58,24 @@ namespace TaskTest {
 
     TEST_F(TaskFixture, GetResult_GivenConstRefArg_ReturnsExpectedResult) {
         int data = 5;
-        auto task = MakeTask(TaskFuncWithConstRefArg, std::cref(data), mutex_, cv_);
+        auto task = MakeTask(TaskFuncWithConstRefArg, std::cref(data), &mutex_);
         task.Process();
         EXPECT_EQ(task.GetResult(), 15);
     }
 
     TEST_F(TaskFixture, GetResult_GivenVoidArg_ReturnsExpectedResult) {
-        auto task = MakeTask(TaskFuncWithoutArg, mutex_, cv_);
+        auto task = MakeTask(TaskFuncWithoutArg);
         task.Process();
-        EXPECT_EQ(task.GetTaskState(), TaskState::COMPLETED);
+        task.GetResult();
+        EXPECT_EQ(task.GetTaskState(), TaskState::SUCCESS);
     }
 
     TEST_F(TaskFixture, Process_ReadAndWriteGeneralData_TasksDoNotConflictForData) {
         //cycle to test different threads distributions
         for (int thread_num = 0; thread_num < counter_of_threads_samples; ++thread_num) {
             int data = 10;
-            auto task_read = MakeTask(TaskFuncWithConstRefArg, std::cref(data), mutex_, cv_);
-            auto task_write = MakeTask(TaskFuncWithRefArg, std::ref(data), mutex_, cv_);
+            auto task_read = MakeTask(TaskFuncWithConstRefArg, std::cref(data), &mutex_);
+            auto task_write = MakeTask(TaskFuncWithRefArg, std::ref(data), &mutex_);
 
             task_write.Process();
             task_read.Process();
@@ -87,42 +87,44 @@ namespace TaskTest {
         }
     }
 
-    TEST_F(TaskFixture, Process_GivenConditionVariable_ShouldNotifyAndCompleteTask) {
-        //check cv notify and state of task is completed
-    }
-
     TEST_F(TaskFixture, ParallelExecutionProcess_GivenThreeTasks_ShouldCompleteFasterThanSequential) {
-        auto start = std::chrono::high_resolution_clock::now();
+        for (int thread_num = 0; thread_num < counter_of_threads_samples; ++thread_num) {
+            auto start = std::chrono::high_resolution_clock::now();
 
-        auto task1 = MakeTask(TaskFuncWithoutArg, mutex_, cv_);
-        auto task2 = MakeTask(TaskFuncWithoutArg, mutex_, cv_);
-        auto task3 = MakeTask(TaskFuncWithoutArg, mutex_, cv_);
+            auto task1 = MakeTask(TaskFuncWithoutArg);
+            auto task2 = MakeTask(TaskFuncWithoutArg);
+            auto task3 = MakeTask(TaskFuncWithoutArg);
 
-        task1.Process();
-        task2.Process();
-        task3.Process();
+            task1.Process();
+            task2.Process();
+            task3.Process();
 
-        task1.GetResult();
-        task2.GetResult();
-        task3.GetResult();
+            task1.GetResult();
+            task2.GetResult();
+            task3.GetResult();
 
 
-        auto end = std::chrono::high_resolution_clock::now();
-        auto duration_parallel = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+            auto end = std::chrono::high_resolution_clock::now();
+            auto duration_parallel = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
-        start = std::chrono::high_resolution_clock::now();
+            start = std::chrono::high_resolution_clock::now();
 
-        TaskFuncWithoutArg();
-        TaskFuncWithoutArg();
-        TaskFuncWithoutArg();
+            TaskFuncWithoutArg();
+            TaskFuncWithoutArg();
+            TaskFuncWithoutArg();
 
-        end = std::chrono::high_resolution_clock::now();
-        auto duration_sequential = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+            end = std::chrono::high_resolution_clock::now();
+            auto duration_sequential = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
-        EXPECT_LT(duration_parallel, duration_sequential);
+            EXPECT_LT(duration_parallel, duration_sequential);
+        }
+
     }
 
     TEST_F(TaskFixture, Process_GivenExceptionInTask_ShouldHandleExceptionAndSetErrorState) {
-        //catch exception and notify
+        auto task = MakeTask(TaskFuncException);
+        task.Process();
+        task.GetResult();
+        EXPECT_EQ(task.GetTaskState(), TaskState::ERROR);
     }
 }

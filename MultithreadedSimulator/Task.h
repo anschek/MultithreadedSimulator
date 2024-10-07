@@ -25,7 +25,14 @@ enum TaskPriority {
 	LOW
 };
 
-template <typename Func, typename Arg=void>
+enum TaskState {
+	UNSTARTED,
+	IN_PROGRESS,
+	SUCCESS,
+	ERROR
+};
+
+template <typename Func, typename Arg = void>
 class Task {
 public:
 	// even with use conditional_t a specialization error occurs
@@ -33,51 +40,36 @@ public:
 
 	// constructor for func with arguments
 	template<typename T = Arg, typename = std::enable_if_t<!std::is_same<T, void>::value>>
-	Task(Func funPtr, T&& data, std::shared_mutex& mutex, std::condition_variable& cv, TaskPriority task_priority = NORMAL)
-		: fun_ptr_(std::move(funPtr)),	data_(std::forward<T>(data)), task_priority_(task_priority),
-		task_id_(++current_tasks_count), task_state_(UNSTARTED), mutex_(mutex), cond_var_(cv) {}
+	Task(Func funPtr, T&& data, std::shared_mutex* mutex = nullptr, TaskPriority task_priority = NORMAL)
+		: fun_ptr_(std::move(funPtr)), data_(std::forward<T>(data)), task_priority_(task_priority),
+		task_id_(++current_tasks_count), task_state_(UNSTARTED), mutex_(mutex) {}
 
-	// constructor for void arguments
 	template<typename T = Arg, typename = std::enable_if_t<std::is_same<T, void>::value>>
-	Task(Func funPtr, std::shared_mutex& mutex, std::condition_variable& cv, TaskPriority task_priority = NORMAL)
-		: fun_ptr_(std::move(funPtr)),	data_(std::monostate{}), task_priority_(task_priority),
-		task_id_(++current_tasks_count), task_state_(UNSTARTED), mutex_(mutex), cond_var_(cv) {}
+	Task(Func funPtr, TaskPriority task_priority = NORMAL)
+		: fun_ptr_(std::move(funPtr)), data_(std::monostate{}), task_priority_(task_priority),
+		task_id_(++current_tasks_count), task_state_(UNSTARTED), mutex_(nullptr){}
 
 	void Process() {
 		try {
 			task_state_ = IN_PROGRESS;
 			ProcessAsyncFuture();
-			task_state_ = COMPLETED;
 		}
 		catch (const std::exception& e) {
 			task_state_ = ERROR;
 			std::cerr << "Exception in Procces: " << e.what() << '\n';
 		}
-		cond_var_.notify_all();
-		
 	}
 
 	ReturnType GetResult() {
-		ReturnType result;
-		if (async_future_result_.valid()) {
-			try {
-				result = async_future_result_.get();
-			}
-			catch (const std::exception& e) {
-				task_state_ = ERROR;
-				std::cerr << "Exception in getting result: " << e.what() << '\n';
-				result = ReturnType{};
-			}
+		try {
+			task_state_ = SUCCESS;
+			return async_future_result_.get();
 		}
-		return result;
+		catch (const std::exception& e) {
+			task_state_ = ERROR;
+			std::cerr << "Exception in getting result: " << e.what() << '\n';
+		}
 	}
-
-	enum TaskState {
-		UNSTARTED,
-		IN_PROGRESS,
-		COMPLETED,
-		ERROR
-	};
 
 	TaskPriority GetTaskPriority() const {
 		return task_priority_;
@@ -95,7 +87,7 @@ public:
 	{
 		if (async_future_result_.valid()) {
 			async_future_result_.wait();
-		} 
+		}
 	}
 
 private:
@@ -122,11 +114,11 @@ private:
 				async_future_result_ = std::async(std::launch::async, fun_ptr_, data_);
 			}//Arg&: write mutex			
 			else if (!std::is_const_v<std::remove_reference_t<Arg>>) {
-				std::unique_lock lock(mutex_);
+				std::unique_lock lock(*mutex_);
 				async_future_result_ = std::async(std::launch::async, fun_ptr_, data_);
 			}//const Arg&: read mutex
 			else {
-				std::shared_lock lock(mutex_);
+				std::shared_lock lock(*mutex_);
 				async_future_result_ = std::async(std::launch::async, fun_ptr_, data_);
 			}
 		}//void: without mutex
@@ -135,16 +127,16 @@ private:
 		}
 	}
 
-	std::shared_mutex& mutex_;
-	std::condition_variable& cond_var_;
+	//std::shared_mutex& mutex_;
+	std::shared_mutex* mutex_;
 };
 
 template <typename Func, typename Arg>
-auto MakeTask(Func funcPtr, Arg&& data, std::shared_mutex& mutex, std::condition_variable& cv, TaskPriority task_priority = TaskPriority::NORMAL) {
-	return Task<Func, std::decay_t<Arg>>(std::move(funcPtr), std::forward<Arg>(data), mutex, cv, task_priority);
+auto MakeTask(Func funcPtr, Arg&& data, std::shared_mutex* mutex = nullptr, TaskPriority task_priority = TaskPriority::NORMAL) {
+	return Task<Func, std::decay_t<Arg>>(std::move(funcPtr), std::forward<Arg>(data), mutex, task_priority);
 }
 
 template <typename Func>
-auto MakeTask(Func funcPtr, std::shared_mutex& mutex, std::condition_variable& cv, TaskPriority task_priority = TaskPriority::NORMAL) {
-	return Task<Func>(std::move(funcPtr), mutex, cv, task_priority);
+auto MakeTask(Func funcPtr, TaskPriority task_priority = TaskPriority::NORMAL) {
+	return Task<Func>(std::move(funcPtr), task_priority);
 }
